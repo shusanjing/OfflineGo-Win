@@ -50,6 +50,7 @@ var (
 	mw          *walk.MainWindow  // 主窗口实例
 	lblMsg      *walk.Label       // 状态消息标签
 	ipInput     *walk.LineEdit    // IP 输入框
+	ni          *walk.NotifyIcon  // 托盘图标实例（全局化以方便释放）
 	isAlerting  bool              // 标记当前是否处于断网报警/倒计时状态
 	cancelChan  = make(chan bool) // 用于取消倒计时协程的通道
 	configLock  sync.RWMutex      // 保护 cfg 读写的读写锁，确保并发安全
@@ -208,7 +209,7 @@ func main() {
 					},
 					PushButton{
 						Text:      "退出",
-						OnClicked: func() { walk.App().Exit(0) },
+						OnClicked: func() { safeExit() },
 					},
 				},
 			},
@@ -217,6 +218,11 @@ func main() {
 	}.Create()); err != nil {
 		panic(err)
 	}
+
+	// 注册窗口关闭事件，确保点击 X 关闭时也能清理托盘
+	mw.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
+		safeExit()
+	})
 
 	setupTray()      // 设置系统托盘图标和菜单
 	go monitorLoop() // 在后台协程中启动监控循环
@@ -228,6 +234,14 @@ func main() {
 	}()
 
 	mw.Run() // 运行 GUI 消息循环
+}
+
+// safeExit 统一处理退出逻辑，释放资源
+func safeExit() {
+	if ni != nil {
+		ni.Dispose()
+	}
+	walk.App().Exit(0)
 }
 
 // applyAndSave 处理“保存配置”按钮点击事件，进行即时 Ping 测试并持久化
@@ -415,9 +429,16 @@ func setupTray() {
 		icon, _ = walk.Resources.Icon(fmt.Sprintf("%d", win.IDI_APPLICATION))
 	}
 
-	ni, _ := walk.NewNotifyIcon(mw)
+	var err error
+	ni, err = walk.NewNotifyIcon(mw)
+	if err != nil {
+		return
+	}
+
 	if icon != nil {
 		ni.SetIcon(icon)
+		// 注意：NotifyIcon 设置 Icon 后，icon 对象本身也应该在不再使用时释放，
+		// 但由于此处 icon 全局复用，通常随进程结束。
 	}
 	ni.SetToolTip("OfflineGo - 断网守卫")
 	ni.SetVisible(true)
@@ -441,7 +462,7 @@ func setupTray() {
 	exitAction.SetText("退出程序")
 	exitAction.Triggered().Attach(func() {
 		writeLog("--- 程序正常退出 ---")
-		walk.App().Exit(0)
+		safeExit()
 	})
 	ni.ContextMenu().Actions().Add(exitAction)
 }
